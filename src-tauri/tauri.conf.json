@@ -1,0 +1,1 @@
+{"$schema":"https://schema.tauri.app/config/2","app":{"security":{"csp":null},"windows":[{"height":720,"title":"CertiGPU","width":1120}]},"build":{"beforeBuildCommand":"npm run build","beforeDevCommand":"npm run dev","devUrl":"http://localhost:1420","frontendDist":"../dist"},"bundle":{"active":true,"icon":[],"targets":"all"},"identifier":"com.certigpu.desktop"}

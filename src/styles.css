@@ -1,0 +1,23 @@
+:root { --bg: #0a0a0a; --card: #171717; --border: #262626; --accent: #00FF94; --text: #fafafa; --muted: #a3a3a3; }
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background: var(--bg); color: var(--text); font-family: Inter, system-ui, sans-serif; overflow:hidden; }
+.app { display:flex; height:100vh; }
+.sidebar { width:220px; background:#111; border-right:1px solid var(--border); padding:20px; display:flex; flex-direction:column; gap:8px; }
+.logo { font-weight:900; font-size:22px; letter-spacing:-1px; margin-bottom:20px; }
+.logo span { color: var(--accent); }
+.nav-item { padding:10px 12px; border-radius:8px; cursor:pointer; color:var(--muted); font-size:14px; }
+.nav-item.active { background: var(--card); color: var(--text); border:1px solid var(--border); }
+.main { flex:1; padding:28px; overflow:auto; }
+.card { background: var(--card); border:1px solid var(--border); border-radius:12px; padding:20px; }
+.btn { background: var(--accent); color:#000; border:none; padding:12px 20px; border-radius:8px; font-weight:700; cursor:pointer; font-size:14px; }
+.btn:disabled { opacity:0.5; cursor:not-allowed; }
+.btn-ghost { background: transparent; color: var(--text); border:1px solid var(--border); }
+.badge { background:#052e1c; color:var(--accent); border:1px solid #065f39; padding:4px 10px; border-radius:999px; font-size:12px; font-weight:600; }
+.grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+.kpi { font-size:28px; font-weight:800; }
+.progress-bar { height:8px; background:#262626; border-radius:99px; overflow:hidden; }
+.progress-fill { height:100%; background:var(--accent); transition:width 0.3s; }
+.log { background:#000; border-radius:8px; padding:12px; font-family:monospace; font-size:12px; height:200px; overflow:auto; color:#22c55e; border:1px solid var(--border); }
+.tabs { display:flex; gap:8px; margin-bottom:24px; }
+.tab { padding:8px 16px; border-radius:8px; cursor:pointer; border:1px solid var(--border); color:var(--muted); font-size:14px; }
+.tab.active { background:var(--text); color:#000; font-weight:700; }

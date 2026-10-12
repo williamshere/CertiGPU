@@ -1,0 +1,19 @@
+[package]
+name = "certigpu"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rand = "0.8"
+tokio = { version = "1", features = ["full"] }
+# GPU telemetry (dynamically loads nvidia-ml at runtime; absence falls back
+# to the simulated device in gpu.rs — no driver needed to build or run).
+nvml-wrapper = "0.10"
+# GPU compute load + VRAM pattern test. Pure Rust, no CUDA toolkit needed.
+wgpu = "0.20"

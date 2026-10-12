@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+src-tauri/target/
+
+# Rust
+**/*.rs.bk
+Cargo.lock
+*.pdb
+
+# Env / secrets (never commit real keys)
+.env
+.env.local
+
+# OS / editors
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
