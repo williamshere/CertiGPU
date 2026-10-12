@@ -40,6 +40,7 @@ code (`src-tauri/src/`) was missing, so nothing could ever run. Fixed:
 
 ```bash
 npm install
+python src-tauri/icons/generate_icons.py   # one-time: generate app icons
 npm run tauri dev
 ```
 

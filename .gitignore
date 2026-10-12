@@ -14,6 +14,12 @@ Cargo.lock
 .env
 .env.local
 
+# Generated app icons (recreate with: python src-tauri/icons/generate_icons.py)
+src-tauri/icons/*.ico
+src-tauri/icons/*.png
+src-tauri/icons/*.icns
+!src-tauri/icons/generate_icons.py
+
 # OS / editors
 .DS_Store
 Thumbs.db
