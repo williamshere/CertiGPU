@@ -118,7 +118,7 @@ export default function App() {
 
         {step === 'testing' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-            <h1 style={{ fontSize: 28, fontWeight: 800 }}>Running Certification - {progress}%</h1>
+            <h1 style={{ fontSize: 28, fontWeight: 800 }}>Running Certification - {progress.toFixed(1)}%</h1>
             <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
               <div className="progress-bar" style={{ flex: 1 }}><div className="progress-fill" style={{ width: `${progress}%` }}></div></div>
               <button className="btn btn-ghost" onClick={stopTest}>Stop Test</button>
@@ -130,7 +130,7 @@ export default function App() {
                   <div style={{ display: 'grid', gap: 8, fontSize: 13 }}>
                     <div>Temp: <b>{latest.gpu_temp}C</b> - Hotspot: <b>{latest.hotspot_temp}C</b> - Mem: <b>{latest.mem_temp}C</b></div>
                     <div>Power: {latest.power_draw}W / {latest.power_limit}W - Clock: {latest.clock_mhz}MHz</div>
-                    <div>Fan: {latest.fan_percent}% - VRAM: {latest.vram_used_mb} MB</div>
+                    <div>Fan: {latest.fan_percent}% - VRAM: {Math.round(latest.vram_used_mb)} MB</div>
                   </div>
                 ) : <div style={{ color: '#737373' }}>Waiting...</div>}
                 <div style={{ marginTop: 16, height: 80, display: 'flex', alignItems: 'end', gap: 2 }}>
