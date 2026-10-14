@@ -122,12 +122,13 @@ impl GpuContext {
     /// Write a known pattern across a large VRAM buffer, read it back, and
     /// count mismatches. Returns the number of bad words (0 = healthy).
     ///
-    /// Runs in 128 MiB chunks: wgpu caps a single buffer at
+    /// Runs in 32 MiB chunks: wgpu caps a single buffer at
     /// `device.limits().max_buffer_size` (256 MiB on many backends, e.g. the
-    /// DX12 backend on Windows), and one 512 MiB allocation panics the
-    /// whole certification task.
+    /// DX12 backend on Windows), and a compute dispatch at 65535 workgroups
+    /// per dimension — one 512 MiB allocation (or a 128 MiB dispatch)
+    /// panics the whole certification task.
     pub async fn vram_pattern_test(&self) -> Result<u32, String> {
-        const CHUNK_MB: u64 = 128;
+        const CHUNK_MB: u64 = 32;
         let chunk_size = CHUNK_MB * 1024 * 1024;
         let chunks = VRAM_TEST_MB / CHUNK_MB;
         let mut total_errors: u32 = 0;
