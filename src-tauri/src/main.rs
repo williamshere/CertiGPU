@@ -26,9 +26,9 @@ const DEFAULT_DURATION_SECS: u64 = 900;
 /// Telemetry cadence promised by the README.
 const SAMPLE_MS: u64 = 500;
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct TestState {
-    running: AtomicBool,
+    running: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
 }
 
@@ -65,7 +65,8 @@ async fn start_certification(
     let duration = duration_secs.unwrap_or(DEFAULT_DURATION_SECS).clamp(60, 3600);
     tokio::spawn(async move {
         run_certification(app.clone(), stop, duration).await;
-        app.state::<TestState>().running.store(false, Ordering::SeqCst);
+        // NOTE: `run_certification` resets `running` itself via a Drop guard,
+        // so a panic can't wedge the UI into "already running" forever.
     });
     Ok(())
 }
@@ -135,6 +136,21 @@ fn health_assessment(
 }
 
 async fn run_certification(app: tauri::AppHandle, stop: Arc<AtomicBool>, duration_secs: u64) {
+    // Reset the `running` flag even if this task panics (e.g. a wgpu
+    // validation error) — otherwise the UI would refuse to start another
+    // run with "a certification is already running" forever.
+    struct RunGuard {
+        running: Arc<AtomicBool>,
+    }
+    impl Drop for RunGuard {
+        fn drop(&mut self) {
+            self.running.store(false, Ordering::SeqCst);
+        }
+    }
+    let _guard = RunGuard {
+        running: app.state::<TestState>().running.clone(),
+    };
+
     let log = |msg: String| {
         let _ = app.emit("test-log", msg);
     };

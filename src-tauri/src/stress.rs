@@ -121,9 +121,28 @@ impl GpuContext {
 
     /// Write a known pattern across a large VRAM buffer, read it back, and
     /// count mismatches. Returns the number of bad words (0 = healthy).
+    ///
+    /// Runs in 128 MiB chunks: wgpu caps a single buffer at
+    /// `device.limits().max_buffer_size` (256 MiB on many backends, e.g. the
+    /// DX12 backend on Windows), and one 512 MiB allocation panics the
+    /// whole certification task.
     pub async fn vram_pattern_test(&self) -> Result<u32, String> {
-        let elements = (VRAM_TEST_MB * 1024 * 1024 / 4) as u32;
-        let size = (elements as u64) * 4;
+        const CHUNK_MB: u64 = 128;
+        let chunk_size = CHUNK_MB * 1024 * 1024;
+        let chunks = VRAM_TEST_MB / CHUNK_MB;
+        let mut total_errors: u32 = 0;
+        for _ in 0..chunks {
+            total_errors += self.vram_chunk_test(chunk_size).await?;
+            if total_errors > 64 {
+                break; // cap the count; the card is clearly bad
+            }
+        }
+        Ok(total_errors)
+    }
+
+    /// One chunk of the VRAM pattern test over a `size`-byte buffer.
+    async fn vram_chunk_test(&self, size: u64) -> Result<u32, String> {
+        let elements = (size / 4) as u32;
 
         let shader = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("certigpu-vram-shader"),
