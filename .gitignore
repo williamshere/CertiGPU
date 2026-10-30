@@ -26,3 +26,7 @@ Thumbs.db
 desktop.ini
 .idea/
 .vscode/
+
+# Tauri generated files
+src-tauri/gen/
+
