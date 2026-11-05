@@ -118,7 +118,7 @@ fn brand_string(brand: Brand) -> String {
 }
 
 pub enum Gpu {
-    Real(Nvml),
+    Real(Box<Nvml>),
     Simulated { tick: u64 },
 }
 
@@ -127,7 +127,7 @@ impl Gpu {
     pub fn detect() -> Self {
         if let Ok(nvml) = Nvml::init() {
             if nvml.device_by_index(0).is_ok() {
-                return Gpu::Real(nvml);
+                return Gpu::Real(Box::new(nvml));
             }
         }
         Gpu::Simulated { tick: 0 }
