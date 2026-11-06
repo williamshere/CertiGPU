@@ -1,1 +1,23 @@
-{"$schema":"https://schema.tauri.app/config/2","description":"Default permissions: allow the frontend to invoke CertiGPU commands and receive events.","identifier":"default","permissions":["core:default"],"windows":["main"]}
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "description": "Default permissions: allow the frontend to invoke CertiGPU commands and receive events.",
+  "identifier": "default",
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:default",
+    {
+      "identifier": "allow-get-gpu-info",
+      "allow": [{ "command": "get_gpu_info" }]
+    },
+    {
+      "identifier": "allow-start-certification",
+      "allow": [{ "command": "start_certification" }]
+    },
+    {
+      "identifier": "allow-stop-certification",
+      "allow": [{ "command": "stop_certification" }]
+    }
+  ],
+  "windows": ["main"]
+}

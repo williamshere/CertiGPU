@@ -90,13 +90,13 @@ fn health_assessment(
         return (
             0,
             format!("STOPPED BY USER{}", suffix),
-            "Certification was stopped before completion — no verdict.".to_string(),
+            "Certification was stopped before completion \u{2014} no verdict.".to_string(),
         );
     }
     if overheated {
         return (
             45,
-            format!("ABORTED — OVERHEAT{}", suffix),
+            format!("ABORTED \u{2014} OVERHEAT{}", suffix),
             format!(
                 "GPU hit {:.0}°C (limit {:.0}°C). Check cooling, airflow and fan curves before re-running.",
                 max_temp, OVERHEAT_C
@@ -106,7 +106,7 @@ fn health_assessment(
     if vram_errors > 0 {
         return (
             40,
-            format!("FAILED — VRAM ERRORS{}", suffix),
+            format!("FAILED \u{2014} VRAM ERRORS{}", suffix),
             format!(
                 "{} VRAM word errors detected during the pattern test. The card is unstable.",
                 vram_errors
@@ -137,7 +137,7 @@ fn health_assessment(
 
 async fn run_certification(app: tauri::AppHandle, stop: Arc<AtomicBool>, duration_secs: u64) {
     // Reset the `running` flag even if this task panics (e.g. a wgpu
-    // validation error) — otherwise the UI would refuse to start another
+    // validation error) \u{2014} otherwise the UI would refuse to start another
     // run with "a certification is already running" forever.
     struct RunGuard {
         running: Arc<AtomicBool>,
@@ -159,7 +159,7 @@ async fn run_certification(app: tauri::AppHandle, stop: Arc<AtomicBool>, duratio
     let info = gpu.info();
     let mode = if simulated { "SIMULATED (no NVIDIA GPU/driver)" } else { "NVML" };
 
-    log(format!("CertiGPU v{} — starting certification ({})", env!("CARGO_PKG_VERSION"), mode));
+    log(format!("CertiGPU v{} \u{2014} starting certification ({})", env!("CARGO_PKG_VERSION"), mode));
     log(format!("GPU: {} | VRAM: {:.1}GB {} | Driver: {}", info.name, info.vram_gb, info.vram_type, info.driver_version));
     if info.is_fake {
         log(format!("WARNING: {}", info.fake_reason));
@@ -169,7 +169,7 @@ async fn run_certification(app: tauri::AppHandle, stop: Arc<AtomicBool>, duratio
 
     // Acquire a GPU compute context for the load + VRAM test. If that fails
     // on a real NVIDIA box we still continue in monitoring mode rather than
-    // dying — but without NVML there is nothing real to monitor.
+    // dying \u{2014} but without NVML there is nothing real to monitor.
     let gpu_ctx = if simulated {
         None
     } else {
@@ -184,7 +184,7 @@ async fn run_certification(app: tauri::AppHandle, stop: Arc<AtomicBool>, duratio
     let load_capable = gpu_ctx.is_some();
 
     // --- Phase 2: VRAM integrity -------------------------------------------
-    log("Phase 2/5: VRAM integrity — writing pattern across 512MB...".to_string());
+    log("Phase 2/5: VRAM integrity \u{2014} writing pattern across 512MB...".to_string());
     let vram_errors: u32 = if let Some(ctx) = &gpu_ctx {
         match ctx.vram_pattern_test().await {
             Ok(0) => {
@@ -218,9 +218,9 @@ async fn run_certification(app: tauri::AppHandle, stop: Arc<AtomicBool>, duratio
         })
     });
     if load_capable {
-        log("Phase 3/5: Thermal stability — sustained compute load...".to_string());
+        log("Phase 3/5: Thermal stability \u{2014} sustained compute load...".to_string());
     } else {
-        log("Phase 3/5: Thermal stability — monitoring (no synthetic load available)...".to_string());
+        log("Phase 3/5: Thermal stability \u{2014} monitoring (no synthetic load available)...".to_string());
     }
 
     let start = Instant::now();
@@ -250,7 +250,7 @@ async fn run_certification(app: tauri::AppHandle, stop: Arc<AtomicBool>, duratio
 
         if progress > 70.0 && !announced_perf {
             announced_perf = true;
-            log("Phase 4/5: Performance baseline — measuring clocks...".to_string());
+            log("Phase 4/5: Performance baseline \u{2014} measuring clocks...".to_string());
         }
         if progress > 90.0 && !announced_fan {
             announced_fan = true;
@@ -261,7 +261,7 @@ async fn run_certification(app: tauri::AppHandle, stop: Arc<AtomicBool>, duratio
         if t.gpu_temp >= OVERHEAT_C {
             overheated = true;
             log(format!(
-                "CRITICAL: GPU at {:.0}°C (limit {:.0}°C) — aborting to protect hardware.",
+                "CRITICAL: GPU at {:.0}°C (limit {:.0}°C) \u{2014} aborting to protect hardware.",
                 t.gpu_temp, OVERHEAT_C
             ));
             break;
@@ -319,4 +319,37 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("failed to run CertiGPU");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_health_assessment_stopped() {
+        let (score, verdict, _) = health_assessment(0, false, true, 50.0, 60.0, false);
+        assert_eq!(score, 0);
+        assert_eq!(verdict, "STOPPED BY USER");
+    }
+
+    #[test]
+    fn test_health_assessment_overheated() {
+        let (score, verdict, _) = health_assessment(0, true, false, 80.0, 95.0, false);
+        assert_eq!(score, 45);
+        assert_eq!(verdict, "ABORTED — OVERHEAT");
+    }
+
+    #[test]
+    fn test_health_assessment_vram_errors() {
+        let (score, verdict, _) = health_assessment(5, false, false, 60.0, 70.0, false);
+        assert_eq!(score, 40);
+        assert_eq!(verdict, "FAILED — VRAM ERRORS");
+    }
+
+    #[test]
+    fn test_health_assessment_perfect() {
+        let (score, verdict, _) = health_assessment(0, false, false, 60.0, 70.0, false);
+        assert_eq!(score, 100);
+        assert_eq!(verdict, "CERTIFIED");
+    }
 }

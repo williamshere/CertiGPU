@@ -1,9 +1,33 @@
 
-import { useState, useEffect } from "react";
+import React, { memo, useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { QRCodeSVG } from "qrcode.react";
 import { uploadCertificate } from "./supabase.js";
+
+const TelemetryChart = memo(({ telemetry }) => {
+  return (
+    <div style={{ marginTop: 16, height: 80, display: 'flex', alignItems: 'end', gap: 2 }}>
+      {telemetry.map((t, i) => <div key={i} style={{ flex: 1, background: 'var(--accent)', height: `${Math.min(100, t.gpu_temp)}%`, opacity: 0.7 }}></div>)}
+    </div>
+  );
+});
+
+const ConsoleLog = memo(({ logs }) => {
+  const logRef = useRef(null);
+
+  useEffect(() => {
+    if (logRef.current) {
+        logRef.current.scrollTop = logRef.current.scrollHeight;
+    }
+  }, [logs]);
+
+  return (
+    <div className="log" ref={logRef}>
+       {logs.map((l, i) => <div key={i}>{l}</div>)}
+    </div>
+  );
+});
 
 export default function App() {
   const [step, setStep] = useState("detect");
@@ -27,9 +51,9 @@ export default function App() {
       setStep("report");
     });
     return () => {
-      unlistenLogs.then(f => f());
-      unlistenTelemetry.then(f => f());
-      unlistenDone.then(f => f());
+      unlistenLogs.then(f => f && f());
+      unlistenTelemetry.then(f => f && f());
+      unlistenDone.then(f => f && f());
     };
   }, []);
 
@@ -76,11 +100,11 @@ export default function App() {
     <div className="app">
       <div className="sidebar">
         <div className="logo">Certi<span>GPU</span></div>
-        <div className="nav-item active">Dashboard</div>
-        <div className="nav-item">New Test</div>
-        <div className="nav-item">My Certificates</div>
-        <div className="nav-item">Settings</div>
-        <div style={{ marginTop: 'auto', fontSize: 12, color: '#52525b' }}>v0.1.0 MVP</div>
+        <div className={`nav-item ${step === "detect" ? "active" : ""}`} onClick={() => setStep("detect")}>Dashboard</div>
+        <div className="nav-item" onClick={() => { setStep("detect"); setReport(null); }}>New Test</div>
+        <div className={`nav-item ${step === "report" && report ? "active" : ""}`} onClick={() => report && setStep("report")}>My Certificates</div>
+        <div className="nav-item" onClick={() => alert("Settings coming soon!")}>Settings</div>
+        <div style={{ marginTop: 'auto', fontSize: 12, color: 'var(--muted)' }}>v0.1.0 MVP</div>
       </div>
       <div className="main">
         <div className="tabs">
@@ -97,20 +121,20 @@ export default function App() {
                 <div className="card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <div>
                     <div style={{ fontSize: 20, fontWeight: 700 }}>{gpuInfo.name}</div>
-                    <div style={{ color: '#a3a3a3', fontSize: 13, marginTop: 6 }}>
+                    <div style={{ color: 'var(--muted)', fontSize: 13, marginTop: 6 }}>
                       Device ID: {gpuInfo.device_id} - BIOS: {gpuInfo.bios_version} - Driver: {gpuInfo.driver_version} - VRAM: {gpuInfo.vram_gb}GB {gpuInfo.vram_type}
                     </div>
                   </div>
-                  <div className="badge">{gpuInfo.is_fake ? 'POSSIBLE FAKE' : 'Genuine'} - {gpuInfo.source}</div>
+                  <div className={`badge ${gpuInfo.is_fake ? "fake" : ""}`}>{gpuInfo.is_fake ? "POSSIBLE FAKE" : "Genuine"} - {gpuInfo.source}</div>
                 </div>
                 <div className="grid">
-                  <div className="card"><div style={{ color: '#a3a3a3', fontSize: 12 }}>CUDA CORES</div><div className="kpi">{gpuInfo.cuda_cores}</div></div>
-                  <div className="card"><div style={{ color: '#a3a3a3', fontSize: 12 }}>HEALTH BASELINE</div><div className="kpi">{gpuInfo.is_fake ? 'Unknown' : '100%'} </div></div>
-                  <div className="card"><div style={{ color: '#a3a3a3', fontSize: 12 }}>UUID</div><div style={{ fontSize: 11, fontFamily: 'monospace', marginTop: 8 }}>{gpuInfo.uuid}</div></div>
-                  <div className="card"><div style={{ color: '#a3a3a3', fontSize: 12 }}>FAKE CHECK</div><div style={{ marginTop: 8, fontSize: 13 }}>{gpuInfo.fake_reason}</div></div>
+                  <div className="card"><div style={{ color: 'var(--muted)', fontSize: 12 }}>CUDA CORES</div><div className="kpi">{gpuInfo.cuda_cores}</div></div>
+                  <div className="card"><div style={{ color: 'var(--muted)', fontSize: 12 }}>HEALTH BASELINE</div><div className="kpi">{gpuInfo.is_fake ? 'Unknown' : '100%'} </div></div>
+                  <div className="card"><div style={{ color: 'var(--muted)', fontSize: 12 }}>UUID</div><div style={{ fontSize: 11, fontFamily: 'monospace', marginTop: 8 }}>{gpuInfo.uuid}</div></div>
+                  <div className="card"><div style={{ color: 'var(--muted)', fontSize: 12 }}>FAKE CHECK</div><div style={{ marginTop: 8, fontSize: 13 }}>{gpuInfo.fake_reason}</div></div>
                 </div>
                 <button className="btn" onClick={startTest} style={{ width: 280 }}>Start 15-min Certification</button>
-                <div style={{ fontSize: 12, color: '#737373' }}>Free scan. Pay $3.99 only to mint QR certificate.</div>
+                <div style={{ fontSize: 12, color: 'var(--muted)' }}>Free scan. Pay $3.99 only to mint QR certificate.</div>
               </>
             )}
           </div>
@@ -132,10 +156,8 @@ export default function App() {
                     <div>Power: {latest.power_draw}W / {latest.power_limit}W - Clock: {latest.clock_mhz}MHz</div>
                     <div>Fan: {latest.fan_percent}% - VRAM: {Math.round(latest.vram_used_mb)} MB</div>
                   </div>
-                ) : <div style={{ color: '#737373' }}>Waiting...</div>}
-                <div style={{ marginTop: 16, height: 80, display: 'flex', alignItems: 'end', gap: 2 }}>
-                  {telemetry.slice(-40).map((t, i) => <div key={i} style={{ flex: 1, background: '#00FF94', height: `${Math.min(100, t.gpu_temp)}%`, opacity: 0.7 }}></div>)}
-                </div>
+                ) : <div style={{ color: 'var(--muted)' }}>Waiting...</div>}
+                <TelemetryChart telemetry={telemetry.slice(-40)} />
               </div>
               <div className="card">
                 <div style={{ fontWeight: 700, marginBottom: 12 }}>Test Steps</div>
@@ -150,7 +172,7 @@ export default function App() {
             </div>
             <div className="card">
               <div style={{ fontWeight: 700, marginBottom: 8 }}>Console Log</div>
-              <div className="log">{logs.map((l, i) => <div key={i}>{l}</div>)}</div>
+              <ConsoleLog logs={logs} />
             </div>
           </div>
         )}
@@ -160,26 +182,26 @@ export default function App() {
             <h1 style={{ fontSize: 28, fontWeight: 800 }}>Certification Report</h1>
             <div className="grid">
               <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
-                <div style={{ width: 100, height: 100, borderRadius: '50%', border: '6px solid #00FF94', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 32, fontWeight: 900 }}>{report.health_score}%</div>
+                <div className={`circular-score ${report.health_score >= 90 ? "certified" : report.health_score >= 70 ? "warning" : "failed"}`}>{report.health_score}%</div>
                 <div>
                   <div style={{ fontWeight: 800, fontSize: 18 }}>{report.verdict}</div>
-                  <div style={{ color: '#a3a3a3', fontSize: 13, marginTop: 4 }}>{report.summary}</div>
+                  <div style={{ color: 'var(--muted)', fontSize: 13, marginTop: 4 }}>{report.summary}</div>
                 </div>
               </div>
               <div className="card" style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
                 <QRCodeSVG value={report.verify_url} size={80} />
                 <div>
                   <div style={{ fontWeight: 700 }}>Verification QR</div>
-                  <div style={{ fontSize: 12, color: '#a3a3a3', wordBreak: 'break-all', marginTop: 4 }}>{report.verify_url}</div>
-                  <div style={{ fontSize: 11, color: '#52525b', marginTop: 6 }}>Signed: {report.cert_id}</div>
+                  <div style={{ fontSize: 12, color: 'var(--muted)', wordBreak: 'break-all', marginTop: 4 }}>{report.verify_url}</div>
+                  <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6 }}>Signed: {report.cert_id}</div>
                 </div>
               </div>
             </div>
             <div className="grid">
-              <div className="card"><div style={{ color: '#a3a3a3', fontSize: 12 }}>AVG TEMP</div><div className="kpi">{report.avg_temp}C</div></div>
-              <div className="card"><div style={{ color: '#a3a3a3', fontSize: 12 }}>MAX HOTSPOT</div><div className="kpi">{report.max_hotspot}C</div></div>
-              <div className="card"><div style={{ color: '#a3a3a3', fontSize: 12 }}>VRAM ERRORS</div><div className="kpi" style={{ color: report.vram_errors === 0 ? '#00FF94' : '#ef4444' }}>{report.vram_errors}</div></div>
-              <div className="card"><div style={{ color: '#a3a3a3', fontSize: 12 }}>PERF vs AVG</div><div className="kpi">{report.perf_vs_avg}</div></div>
+              <div className="card"><div style={{ color: 'var(--muted)', fontSize: 12 }}>AVG TEMP</div><div className="kpi">{report.avg_temp}C</div></div>
+              <div className="card"><div style={{ color: 'var(--muted)', fontSize: 12 }}>MAX HOTSPOT</div><div className="kpi">{report.max_hotspot}C</div></div>
+              <div className="card"><div style={{ color: 'var(--muted)', fontSize: 12 }}>VRAM ERRORS</div><div className="kpi" style={{ color: report.vram_errors === 0 ? "var(--success)" : "var(--error)" }}>{report.vram_errors}</div></div>
+              <div className="card"><div style={{ color: 'var(--muted)', fontSize: 12 }}>PERF vs AVG</div><div className="kpi">{report.perf_vs_avg}</div></div>
             </div>
             <div style={{ display: 'flex', gap: 12 }}>
               <button className="btn" onClick={mintCertificate}>Mint Certificate ($3.99)</button>
