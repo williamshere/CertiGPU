@@ -131,7 +131,7 @@ async fn start_certification(
         run_gpu(
             app,
             stop,
-            duration_secs.unwrap_or(900).clamp(60, 3600),
+            duration_secs.unwrap_or(300).clamp(60, 3600),
             workload,
             intensity.unwrap_or(80).clamp(10, 100),
             limit,
@@ -161,7 +161,7 @@ async fn start_cpu_test(
         run_cpu(
             app,
             stop,
-            duration_secs.unwrap_or(900).clamp(60, 3600),
+            duration_secs.unwrap_or(300).clamp(60, 3600),
             workload,
             intensity.unwrap_or(80).clamp(10, 100),
             threads

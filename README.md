@@ -1,7 +1,5 @@
 <!-- coderabbit-ai-generated:v1 -->
 
-<!-- coderabbit-ai-generated-section:v1:11594122c9d1c47ad162dca0e8c2ad981bf8a3db05d6f07b9e5887405037f8a2 -->
-
 # CertiGPU
 
 Free hardware testing and configuration tools built with React, Vite, Tauri 2, Rust and wgpu. All tests, reports, local QR codes, settings and script exports are available without payment, subscriptions, accounts or cloud services.

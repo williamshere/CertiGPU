@@ -688,7 +688,7 @@ function App() {
                       key={id}
                       onClick={() => {
                         chooseTarget(id);
-                        if (!runRef.current) setDuration(900);
+                        if (!runRef.current) setDuration(300);
                         navigate("stress");
                       }}
                     >

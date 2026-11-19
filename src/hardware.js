@@ -1,5 +1,5 @@
 export const DEFAULT_SETTINGS = {
-  duration: 900,
+  duration: 300,
   temperatureLimit: 85,
   intensity: 80,
   threads: 4,
