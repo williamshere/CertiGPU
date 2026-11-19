@@ -1,79 +1,61 @@
-# CertiGPU — "The Carfax for GPUs"
+<!-- coderabbit-ai-generated:v1 -->
 
-Desktop app (Tauri v2 + React) that detects your NVIDIA GPU, runs a
-**5-minute certification** (VRAM integrity test, thermal stability under
-real compute load, performance baseline, fan & power), and produces a
-health-score report with a verification QR code.
+# CertiGPU
 
-## What was fixed (Oct 2026 revival)
+Free hardware testing and configuration tools built with React, Vite, Tauri 2, Rust and wgpu. All tests, reports, local QR codes, settings and script exports are available without payment, subscriptions, accounts or cloud services.
 
-The project was a complete frontend with **no backend at all** — the Rust
-code (`src-tauri/src/`) was missing, so nothing could ever run. Fixed:
+## Tools
 
-- Wrote the full Tauri backend: `get_gpu_info` / `start_certification` /
-  `stop_certification` commands plus `test-log`, `telemetry`, `test-done`
-  events the UI already expected.
-- Real GPU telemetry via NVML (`nvml-wrapper`), with a simulated fallback
-  when no NVIDIA driver is present (UI badge shows the source).
-- Real load generation: a WGSL compute shader (via `wgpu`, no CUDA toolkit
-  needed) for the thermal soak, plus a 512MB VRAM pattern read-back test.
-- Fake-card check: reported VRAM vs. the expected profile for known models.
-- Added the missing Tauri v2 `capabilities/default.json` — without it the
-  frontend's `invoke()` calls are silently denied.
-- Removed the phantom `bin/cuda-memtest` sidecar from `tauri.conf.json`
-  (the binary never existed; referencing it breaks the build).
-- Wired the "Mint Certificate" button to the existing Supabase uploader
-  (was a `TODO` alert) and added a **Stop Test** button.
-- Auto-abort at 92°C to protect hardware.
+- **GPU tests:** full compute and VRAM run, compute-only stress, or repeated VRAM integrity passes. Four address/XOR patterns are verified in a bounded 32 MiB window (128 MiB of transfers per pass, not a full-capacity VRAM test). <!-- coderabbit-ai-generated:v1 -->
 
-## Stack
+<!-- coderabbit-ai-generated-section:v1:ff7fbbfff82e4e03d527bc1348746dc3a3d5188dede4e2766a62cbc182ff51e1 -->
 
-- Frontend: React 18 + Vite 6
-- Backend: Tauri 2 + Rust (tokio, serde, `nvml-wrapper`, `wgpu`)
-- Cert upload: Supabase (mock mode unless `VITE_SUPABASE_URL` is set)
+NVIDIA NVML supplies telemetry; wgpu must match the monitored GPU. Native testing currently requires one NVIDIA GPU; multiple NVIDIA devices and other vendors are unsupported.
 
-## Run it (Windows)
+<!-- /coderabbit-ai-generated:v1 --> Missing compute contexts or sensors produce errors rather than certification.
+- **CPU tests:** mixed, integer hash, floating-point arithmetic and memory verification workloads. Choose 1–32 workers (bounded by native logical threads), 10–100% duty cycle and 1–60 minutes. Memory use is bounded to 1 MiB per worker. CPU temperature is unavailable: monitor cooling externally. CPU reports describe verified workloads, not thermal health certification.
+- **Settings:** persistent duration, intensity, CPU workers, GPU temperature cutoff (60–92°C), telemetry interval, temperature units, appearance and local report saving. Defaults apply to new sessions.
+- **Reports:** keep up to 50 reports locally, inspect results and export JSON and local QR payloads for free. QR codes contain an ID and verdict, not a digital signature or online verification link. Stopped, demo, failed and limited-scope runs are labeled explicitly.
+- **Optimization:** customize and export Windows PowerShell power-plan scripts or Linux CPU governor scripts. Templates save previous state before writing and include restore commands. They never change voltage or clock offsets. Higher performance can increase heat and power use; gains depend on hardware and workloads. Linux requires cpufreq policy support and sudo; Windows power plans must exist on the target system.
 
-1. Install Rust: https://rustup.rs (or `rustup-init.exe` if you still have it)
-2. Install Node 18+
-3. Install VS Build Tools (C++ workload) — WebView2 is already on Win11
+The browser preview uses explicitly labeled sample devices and simulated sessions. It does not detect or stress local hardware. Use the desktop app for native tests. No results are uploaded.
+
+## Development
+
+Node 18+ and npm are required for the web interface:
 
 ```bash
-npm install
-python src-tauri/icons/generate_icons.py   # one-time: generate app icons
-npm run tauri dev
+npm ci
+npm run dev -- --host 0.0.0.0
+npm run build
+npm test
 ```
 
-Release build:
+Vite listens on port 1420. For the desktop app, install Rust and the [Tauri platform prerequisites](https://v2.tauri.app/start/prerequisites/). Windows requires C++ Build Tools and WebView2; Linux requires GTK3 and WebKitGTK 4.1 development packages.
 
 ```bash
+python src-tauri/icons/generate_icons.py
+npm run tauri dev
+cargo test --manifest-path src-tauri/Cargo.toml
 npm run tauri build
 ```
 
-## Safety — read this before the test
+## Hardware behavior
 
-- The certification pins your GPU at ~100% compute load for 5 minutes.
-  That is the point, but respect it: **do not run it with blocked vents**,
-  and keep an eye on the live temperature chart.
-- The app **auto-aborts at 92°C** and you can hit **Stop Test** anytime.
-- On laptops or small-form-factor PCs, you can still shorten it further — the
-  duration is a parameter (`start_certification` accepts seconds; the UI
-  uses the 300s default).
-- No overclocking or voltage changes are made. Ever. This app only
-  observes and loads; it never writes GPU settings.
+Stress tests generate sustained load. Keep vents clear and monitor cooling. GPU workloads abort at the selected edge-temperature limit (never above 92°C); stop requests are checked between bounded GPU dispatches and VRAM readbacks. CPU cancellation is checked between verified batches. Long driver calls can delay cancellation. Hotspot and memory junction sensors are not separately measured.
 
-## Still TODO (from the original plan)
+This release expands the previous observation-only contract: users may now export scripts that change OS power policy. Scripts are editable and executed manually, outside the application. Review edits and keep saved state until rollback succeeds. Templates refuse to overwrite a previous rollback snapshot. CertiGPU does not execute arbitrary scripts or silently apply tuning.
 
-- [ ] Stripe integration for the $3.99 certificate unlock
-- [ ] AMD support (ADL / ROCm SMI)
-- [ ] Point `verify_url` at a real verification backend (currently
-      `https://certigpu.app/verify/<id>`, a placeholder)
+Power-policy references: [Microsoft powercfg](https://learn.microsoft.com/en-us/windows-hardware/design/device-experiences/powercfg-command-line-options), [Linux CPU frequency governors](https://docs.kernel.org/admin-guide/pm/cpufreq.html).
 
-## Project layout
+## Layout
 
-- `src/App.jsx` — full UI (Detect → Testing → Report)
-- `src/supabase.js` — certificate upload (mock unless configured)
-- `src-tauri/src/main.rs` — Tauri commands + certification orchestrator
-- `src-tauri/src/gpu.rs` — NVML detection/telemetry + simulated fallback
-- `src-tauri/src/stress.rs` — wgpu compute load + VRAM pattern test
-- `src-tauri/capabilities/default.json` — Tauri v2 permission grant
+- `src/App.jsx`, `src/styles.css`: dashboard, tests, settings, reports and script builder
+- `src/hardware.js`: settings normalization, persistence and script templates
+- `src-tauri/src/main.rs`: commands, shared session lock and result orchestration
+- `src-tauri/src/cpu.rs`: cancellable CPU verification workloads
+- `src-tauri/src/gpu.rs`: NVIDIA detection and telemetry
+- `src-tauri/src/stress.rs`: GPU compute and VRAM readback
+
+
+<!-- /coderabbit-ai-generated:v1 -->

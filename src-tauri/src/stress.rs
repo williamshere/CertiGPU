@@ -11,11 +11,8 @@ use std::sync::{
 };
 
 const WORKGROUP_SIZE: u32 = 256;
-/// 4M u32 elements = 16 MiB per dispatch — big enough to keep the GPU busy,
-//  small enough to fit anywhere.
-const ELEMENTS: u32 = 4_194_304;
-/// Size of the VRAM pattern-test buffer (512 MiB).
-const VRAM_TEST_MB: u64 = 512;
+/// Bounded 4 MiB dispatches keep work cancellable between submissions.
+const ELEMENTS: u32 = 1_048_576;
 
 /// ALU-heavy integer hash avalanche. Memory-light on purpose so the
 /// bottleneck is the compute units, not VRAM bandwidth.
@@ -24,7 +21,7 @@ const BURN_SHADER: &str = r#"
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     var x: u32 = id.x ^ 0x9E3779B9u;
-    for (var i: u32 = 0u; i < 4000u; i = i + 1u) {
+    for (var i: u32 = 0u; i < 256u; i = i + 1u) {
         x = x ^ (x >> 16u);
         x = x * 0x7feb352du;
         x = x ^ (x >> 15u);
@@ -35,46 +32,60 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 "#;
 
-/// Writes a deterministic pattern: data[i] = i ^ 0xDEADBEEF.
+/// Address-XOR pattern, instantiated with four different bit masks.
 const PATTERN_SHADER: &str = r#"
 @group(0) @binding(0) var<storage, read_write> data: array<u32>;
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
-    data[id.x] = id.x ^ 0xDEADBEEFu;
+    data[id.x] = id.x ^ PATTERN;
 }
 "#;
 
 pub struct GpuContext {
     device: wgpu::Device,
     queue: wgpu::Queue,
+    burn: Option<(wgpu::ComputePipeline, wgpu::BindGroup, wgpu::Buffer)>,
 }
 
 impl GpuContext {
-    /// Acquire the high-performance GPU adapter. Fails on machines without a
-    /// discrete GPU / usable graphics driver — the caller falls back to
-    /// simulated mode.
-    pub async fn new() -> Result<Self, String> {
+    /// Match the NVIDIA device being monitored; refuse unsupported adapters.
+    pub async fn new(device_name: &str) -> Result<Self, String> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
         let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: None,
-                force_fallback_adapter: false,
+            .enumerate_adapters(wgpu::Backends::all())
+            .into_iter()
+            .find(|adapter| {
+                let info = adapter.get_info();
+                info.vendor == 0x10de
+                    && info
+                        .name
+                        .to_lowercase()
+                        .contains(&device_name.to_lowercase().replace("nvidia ", ""))
             })
-            .await
-            .ok_or_else(|| "no high-performance GPU adapter found".to_string())?;
+            .ok_or_else(|| "No compute adapter matching the monitored NVIDIA GPU".to_owned())?;
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor::default(), None)
             .await
             .map_err(|e| format!("failed to open GPU device: {}", e))?;
-        Ok(Self { device, queue })
+        let mut ctx = Self {
+            device,
+            queue,
+            burn: None,
+        };
+        ctx.burn = Some(ctx.make_pipeline(BURN_SHADER));
+        Ok(ctx)
     }
 
-    fn make_pipeline(&self, shader_src: &str) -> (wgpu::ComputePipeline, wgpu::BindGroup, wgpu::Buffer) {
-        let shader = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("certigpu-shader"),
-            source: wgpu::ShaderSource::Wgsl(shader_src.into()),
-        });
+    fn make_pipeline(
+        &self,
+        shader_src: &str,
+    ) -> (wgpu::ComputePipeline, wgpu::BindGroup, wgpu::Buffer) {
+        let shader = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("certigpu-shader"),
+                source: wgpu::ShaderSource::Wgsl(shader_src.into()),
+            });
         let buffer_size = (ELEMENTS as u64) * 4;
         let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("certigpu-storage"),
@@ -83,31 +94,36 @@ impl GpuContext {
             mapped_at_creation: false,
         });
         let bind_group_layout =
-            self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("certigpu-bgl"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
+            self.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("certigpu-bgl"),
+                    entries: &[wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    }],
+                });
+        let pipeline_layout = self
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("certigpu-pl"),
+                bind_group_layouts: &[&bind_group_layout],
+                push_constant_ranges: &[],
             });
-        let pipeline_layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("certigpu-pl"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
-        });
-        let pipeline = self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("certigpu-pipeline"),
-            layout: Some(&pipeline_layout),
-            module: &shader,
-            entry_point: "main",
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        });
+        let pipeline = self
+            .device
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("certigpu-pipeline"),
+                layout: Some(&pipeline_layout),
+                module: &shader,
+                entry_point: "main",
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            });
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("certigpu-bg"),
             layout: &bind_group_layout,
@@ -119,36 +135,45 @@ impl GpuContext {
         (pipeline, bind_group, buffer)
     }
 
-    /// Write a known pattern across a large VRAM buffer, read it back, and
-    /// count mismatches. Returns the number of bad words (0 = healthy).
-    ///
-    /// Runs in 32 MiB chunks: wgpu caps a single buffer at
-    /// `device.limits().max_buffer_size` (256 MiB on many backends, e.g. the
-    /// DX12 backend on Windows), and a compute dispatch at 65535 workgroups
-    /// per dimension — one 512 MiB allocation (or a 128 MiB dispatch)
-    /// panics the whole certification task.
-    pub async fn vram_pattern_test(&self) -> Result<u32, String> {
-        const CHUNK_MB: u64 = 32;
-        let chunk_size = CHUNK_MB * 1024 * 1024;
-        let chunks = VRAM_TEST_MB / CHUNK_MB;
-        let mut total_errors: u32 = 0;
-        for _ in 0..chunks {
-            total_errors += self.vram_chunk_test(chunk_size).await?;
+    /// Verify four address-XOR patterns in a 32 MiB window, checking
+    /// cancellation, deadline and thermal safety between each readback.
+    pub async fn vram_pattern_test<F>(
+        &self,
+        stop: &Arc<AtomicBool>,
+        deadline: std::time::Instant,
+        mut check_temperature: F,
+    ) -> Result<u32, String>
+    where
+        F: FnMut() -> Result<(), String>,
+    {
+        let mut total_errors = 0u32;
+        for pattern in [0u32, u32::MAX, 0xaaaaaaaa, 0x55555555] {
+            if stop.load(Ordering::SeqCst) || std::time::Instant::now() >= deadline {
+                return Err("VRAM test interrupted".into());
+            }
+            check_temperature()?;
+            total_errors += self.vram_chunk_test(32 * 1024 * 1024, pattern).await?;
             if total_errors > 64 {
-                break; // cap the count; the card is clearly bad
+                break;
             }
         }
         Ok(total_errors)
     }
 
     /// One chunk of the VRAM pattern test over a `size`-byte buffer.
-    async fn vram_chunk_test(&self, size: u64) -> Result<u32, String> {
+    async fn vram_chunk_test(&self, size: u64, pattern: u32) -> Result<u32, String> {
         let elements = (size / 4) as u32;
 
-        let shader = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("certigpu-vram-shader"),
-            source: wgpu::ShaderSource::Wgsl(PATTERN_SHADER.into()),
-        });
+        let shader = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("certigpu-vram-shader"),
+                source: wgpu::ShaderSource::Wgsl(
+                    PATTERN_SHADER
+                        .replace("PATTERN", &format!("{}u", pattern))
+                        .into(),
+                ),
+            });
         let storage = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("certigpu-vram"),
             size,
@@ -162,31 +187,36 @@ impl GpuContext {
             mapped_at_creation: false,
         });
         let bind_group_layout =
-            self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("certigpu-vram-bgl"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
+            self.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("certigpu-vram-bgl"),
+                    entries: &[wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    }],
+                });
+        let pipeline_layout = self
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("certigpu-vram-pl"),
+                bind_group_layouts: &[&bind_group_layout],
+                push_constant_ranges: &[],
             });
-        let pipeline_layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("certigpu-vram-pl"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
-        });
-        let pipeline = self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("certigpu-vram-pipeline"),
-            layout: Some(&pipeline_layout),
-            module: &shader,
-            entry_point: "main",
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        });
+        let pipeline = self
+            .device
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("certigpu-vram-pipeline"),
+                layout: Some(&pipeline_layout),
+                module: &shader,
+                entry_point: "main",
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            });
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("certigpu-vram-bg"),
             layout: &bind_group_layout,
@@ -196,9 +226,11 @@ impl GpuContext {
             }],
         });
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("certigpu-vram-enc"),
-        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("certigpu-vram-enc"),
+            });
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
             pass.set_pipeline(&pipeline);
@@ -221,8 +253,8 @@ impl GpuContext {
         let data = slice.get_mapped_range();
         let mut errors: u32 = 0;
         for (i, chunk) in data.chunks_exact(4).enumerate() {
-            let word = u32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-            if word != (i as u32) ^ 0xDEADBEEF {
+            let word = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+            if word != (i as u32) ^ pattern {
                 errors += 1;
                 if errors > 64 {
                     break; // cap the count; the card is clearly bad
@@ -234,20 +266,22 @@ impl GpuContext {
         Ok(errors)
     }
 
-    /// Sustained compute load until `stop` is set. Each iteration dispatches
-    /// one full ALU-heavy pass and waits for it, keeping the GPU saturated.
-    /// Synchronous by design — run it on a blocking thread.
-    pub fn burn(&self, stop: &Arc<AtomicBool>) {
-        let (pipeline, bind_group, _buffer) = self.make_pipeline(BURN_SHADER);
+    /// One bounded compute dispatch. Pipeline and buffers are reused;
+    /// the orchestrator controls sampling, duty cycle and cancellation.
+    pub fn burn_once(&self) {
+        let (pipeline, bind_group, _buffer) =
+            self.burn.as_ref().expect("compute resources initialized");
         let workgroups = ELEMENTS / WORKGROUP_SIZE;
-        while !stop.load(Ordering::Relaxed) {
-            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("certigpu-burn-enc"),
-            });
+        {
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("certigpu-burn-enc"),
+                });
             {
                 let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
-                pass.set_pipeline(&pipeline);
-                pass.set_bind_group(0, &bind_group, &[]);
+                pass.set_pipeline(pipeline);
+                pass.set_bind_group(0, bind_group, &[]);
                 pass.dispatch_workgroups(workgroups, 1, 1);
             }
             self.queue.submit(Some(encoder.finish()));

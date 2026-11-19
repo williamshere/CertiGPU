@@ -1,38 +1,24 @@
-//! CertiGPU backend: Tauri commands + the shorter GPU certification orchestrator.
-//!
-//! Frontend contract (see `src/App.jsx`):
-//! - command `get_gpu_info` -> [`gpu::GpuInfo`]
-//! - command `start_certification(duration_secs?: u64)` -> ()
-//! - command `stop_certification` -> ()
-//! - events: `test-log` (String), `telemetry` ([`gpu::Telemetry`]),
-//!   `test-done` ([`Report`])
-
+//! Free GPU and CPU stress testing commands and event orchestration.
+mod cpu;
 mod gpu;
 mod stress;
 
-use gpu::{Gpu, GpuInfo, Telemetry};
+use gpu::{Gpu, GpuInfo};
 use serde::Serialize;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
 };
 use std::time::{Duration, Instant};
-use tauri::{Emitter, Manager, State};
+use tauri::{Emitter, State};
 
-/// Abort the run if the GPU edge temperature reaches this.
 const OVERHEAT_C: f64 = 92.0;
-/// Default certification length (seconds). The UI labels it as a sub-15-minute run.
-const DEFAULT_DURATION_SECS: u64 = 300;
-/// Telemetry cadence promised by the README.
-const SAMPLE_MS: u64 = 500;
-
 #[derive(Default, Clone)]
 struct TestState {
     running: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
 }
 
-/// Payload of the `test-done` event. Field names match `src/App.jsx`.
 #[derive(Debug, Clone, Serialize)]
 struct Report {
     health_score: u32,
@@ -40,15 +26,84 @@ struct Report {
     summary: String,
     verify_url: String,
     cert_id: String,
-    avg_temp: f64,
-    max_hotspot: f64,
-    vram_errors: u32,
+    avg_temp: Option<f64>,
+    max_hotspot: Option<f64>,
+    vram_errors: Option<u32>,
+    cpu_errors: Option<u64>,
     perf_vs_avg: String,
+}
+#[derive(Serialize)]
+struct CpuInfo {
+    name: String,
+    logical_threads: usize,
+    arch: String,
 }
 
 #[tauri::command]
 async fn get_gpu_info() -> Result<GpuInfo, String> {
     Ok(Gpu::detect().info())
+}
+#[tauri::command]
+fn get_cpu_info() -> CpuInfo {
+    let name = std::fs::read_to_string("/proc/cpuinfo")
+        .ok()
+        .and_then(|text| {
+            text.lines().find_map(|line| {
+                line.strip_prefix("model name")
+                    .and_then(|rest| rest.split_once(':'))
+                    .map(|(_, name)| name.trim().to_owned())
+            })
+        })
+        .or_else(|| std::env::var("PROCESSOR_IDENTIFIER").ok())
+        .unwrap_or_else(|| format!("{} processor", std::env::consts::ARCH));
+    CpuInfo {
+        name,
+        logical_threads: cpu::logical_threads(),
+        arch: std::env::consts::ARCH.into(),
+    }
+}
+
+fn begin(state: &TestState) -> Result<Arc<AtomicBool>, String> {
+    if state.running.swap(true, Ordering::SeqCst) {
+        return Err("A hardware test is already running".into());
+    }
+    state.stop.store(false, Ordering::SeqCst);
+    Ok(state.stop.clone())
+}
+// Reset both flags after every exit, including panics; cancel any surviving workers.
+struct RunGuard {
+    running: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
+}
+impl Drop for RunGuard {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        self.running.store(false, Ordering::SeqCst);
+    }
+}
+fn launch<F>(app: tauri::AppHandle, state: &TestState, task: F)
+where
+    F: std::future::Future<Output = Result<Report, String>> + Send + 'static,
+{
+    let running = state.running.clone();
+    let stop = state.stop.clone();
+    tokio::spawn(async move {
+        let result = {
+            let _guard = RunGuard { running, stop };
+            tokio::spawn(task).await
+        };
+        match result {
+            Ok(Ok(report)) => {
+                let _ = app.emit("test-done", report);
+            }
+            Ok(Err(error)) => {
+                let _ = app.emit("test-error", error);
+            }
+            Err(error) => {
+                let _ = app.emit("test-error", format!("Worker terminated: {error}"));
+            }
+        }
+    });
 }
 
 #[tauri::command]
@@ -56,27 +111,288 @@ async fn start_certification(
     app: tauri::AppHandle,
     state: State<'_, TestState>,
     duration_secs: Option<u64>,
+    workload: Option<String>,
+    intensity: Option<u64>,
+    temperature_limit: Option<f64>,
+    sample_ms: Option<u64>,
 ) -> Result<(), String> {
-    if state.running.swap(true, Ordering::SeqCst) {
-        return Err("a certification is already running".to_string());
+    let workload = workload.unwrap_or_else(|| "full".into());
+    if !["full", "compute", "vram"].contains(&workload.as_str()) {
+        return Err("Unknown GPU workload".into());
     }
-    let stop = state.stop.clone();
-    stop.store(false, Ordering::SeqCst);
-    let duration = duration_secs.unwrap_or(DEFAULT_DURATION_SECS).clamp(60, 3600);
-    tokio::spawn(async move {
-        run_certification(app.clone(), stop, duration).await;
-        // NOTE: `run_certification` resets `running` itself via a Drop guard,
-        // so a panic can't wedge the UI into "already running" forever.
-    });
+    let limit = temperature_limit.unwrap_or(85.0);
+    if !limit.is_finite() || !(60.0..=OVERHEAT_C).contains(&limit) {
+        return Err("GPU temperature limit must be 60–92°C".into());
+    }
+    let stop = begin(&state)?;
+    launch(
+        app.clone(),
+        &state,
+        run_gpu(
+            app,
+            stop,
+            duration_secs.unwrap_or(300).clamp(60, 3600),
+            workload,
+            intensity.unwrap_or(80).clamp(10, 100),
+            limit,
+            sample_ms.unwrap_or(1000).clamp(500, 2000),
+        ),
+    );
     Ok(())
 }
-
+#[tauri::command]
+async fn start_cpu_test(
+    app: tauri::AppHandle,
+    state: State<'_, TestState>,
+    duration_secs: Option<u64>,
+    workload: Option<String>,
+    intensity: Option<u64>,
+    threads: Option<usize>,
+    sample_ms: Option<u64>,
+) -> Result<(), String> {
+    let workload = workload.unwrap_or_else(|| "mixed".into());
+    if !["mixed", "integer", "float", "memory"].contains(&workload.as_str()) {
+        return Err("Unknown CPU workload".into());
+    }
+    let stop = begin(&state)?;
+    launch(
+        app.clone(),
+        &state,
+        run_cpu(
+            app,
+            stop,
+            duration_secs.unwrap_or(300).clamp(60, 3600),
+            workload,
+            intensity.unwrap_or(80).clamp(10, 100),
+            threads
+                .unwrap_or(4)
+                .clamp(1, cpu::logical_threads().min(32)),
+            sample_ms.unwrap_or(1000).clamp(500, 2000),
+        ),
+    );
+    Ok(())
+}
 #[tauri::command]
 async fn stop_certification(state: State<'_, TestState>) -> Result<(), String> {
     state.stop.store(true, Ordering::SeqCst);
     Ok(())
 }
 
+async fn run_cpu(
+    app: tauri::AppHandle,
+    stop: Arc<AtomicBool>,
+    seconds: u64,
+    workload: String,
+    intensity: u64,
+    threads: usize,
+    sample_ms: u64,
+) -> Result<Report, String> {
+    let _ = app.emit("test-log", format!("CPU {workload}: {threads} threads at {intensity}% duty cycle. Temperature monitoring unavailable; monitor externally."));
+    let batches = Arc::new(AtomicU64::new(0));
+    let errors = Arc::new(AtomicU64::new(0));
+    let start = Instant::now();
+    let deadline = start + Duration::from_secs(seconds);
+    let handles: Vec<_> = (0..threads)
+        .map(|_| {
+            let (stop, batches, errors, workload) = (
+                stop.clone(),
+                batches.clone(),
+                errors.clone(),
+                workload.clone(),
+            );
+            tokio::task::spawn_blocking(move || {
+                cpu::run_worker(stop, batches, errors, workload, intensity, deadline)
+            })
+        })
+        .collect();
+    let mut ticker = tokio::time::interval(Duration::from_millis(sample_ms));
+    while Instant::now() < deadline && !stop.load(Ordering::SeqCst) {
+        ticker.tick().await;
+        let _ = app.emit("telemetry", serde_json::json!({ "progress": (start.elapsed().as_secs_f64() / seconds as f64 * 100.0).min(100.0), "cpu_ops": batches.load(Ordering::Relaxed) }));
+        if handles.iter().any(|h| h.is_finished()) && Instant::now() < deadline {
+            stop.store(true, Ordering::SeqCst);
+        }
+    }
+    let stopped = stop.load(Ordering::SeqCst);
+    stop.store(true, Ordering::SeqCst);
+    for handle in handles {
+        handle
+            .await
+            .map_err(|e| format!("CPU worker failed: {e}"))?;
+    }
+    let errors = errors.load(Ordering::Relaxed);
+    let verdict = if errors > 0 {
+        "FAILED — CPU ERRORS"
+    } else if stopped {
+        "STOPPED BY USER"
+    } else {
+        "COMPLETED"
+    };
+    let _ = app.emit(
+        "test-log",
+        format!(
+            "{verdict}: {} verified batches, {errors} errors.",
+            batches.load(Ordering::Relaxed)
+        ),
+    );
+    Ok(Report { health_score: 0, verdict: verdict.into(), summary: format!("{threads} threads; {} verified batches; {errors} errors. CPU temperature was not measured. This is a workload result, not a thermal certification.", batches.load(Ordering::Relaxed)), verify_url: String::new(), cert_id: format!("CPU-{:016X}", rand::random::<u64>()), avg_temp: None, max_hotspot: None, vram_errors: None, cpu_errors: Some(errors), perf_vs_avg: format!("{:.0} batches/s", batches.load(Ordering::Relaxed) as f64 / start.elapsed().as_secs_f64().max(0.001)) })
+}
+
+async fn run_gpu(
+    app: tauri::AppHandle,
+    stop: Arc<AtomicBool>,
+    seconds: u64,
+    workload: String,
+    intensity: u64,
+    limit: f64,
+    sample_ms: u64,
+) -> Result<Report, String> {
+    let mut gpu = Gpu::detect();
+    if !gpu.is_real() {
+        return Err("NVIDIA telemetry unavailable. Use the clearly labeled demo instead.".into());
+    }
+    if let Gpu::Real(nvml) = &gpu {
+        if nvml.device_count().map_err(|e| e.to_string())? != 1 {
+            return Err("GPU testing currently requires a single NVIDIA device to match telemetry and compute reliably.".into());
+        }
+    }
+    let ctx = stress::GpuContext::new(&gpu.info().name).await?;
+    let start = Instant::now();
+    let deadline = start + Duration::from_secs(seconds);
+    let mut temps = Vec::new();
+    let mut peak = 0.0f64;
+    let mut clock_sum = 0.0;
+    let mut vram_errors = None;
+    let mut overheated = false;
+    let mut compute_dispatches = 0u64;
+    let _ = app.emit(
+        "test-log",
+        format!("GPU {workload}: {seconds}s at {intensity}% duty cycle; thermal cutoff {limit}°C."),
+    );
+    let mut next_sample = start;
+    while Instant::now() < deadline && !stop.load(Ordering::SeqCst) {
+        if Instant::now() >= next_sample {
+            let sample =
+                gpu.sample((start.elapsed().as_secs_f64() / seconds as f64 * 100.0).min(100.0));
+            if sample.gpu_temp <= 0.0 {
+                return Err("GPU temperature sensor unavailable; test aborted.".into());
+            }
+            peak = peak.max(sample.gpu_temp);
+            temps.push(sample.gpu_temp);
+            clock_sum += sample.clock_mhz;
+            let _ = app.emit("telemetry", &sample);
+            if sample.gpu_temp >= limit {
+                overheated = true;
+                break;
+            }
+            next_sample = Instant::now() + Duration::from_millis(sample_ms);
+        }
+        if stop.load(Ordering::SeqCst) || Instant::now() >= deadline {
+            break;
+        }
+        // Dispatch continuously; telemetry sampling must not pace the GPU load.
+        let dispatch_start = Instant::now();
+        if workload == "vram" || (workload == "full" && vram_errors.is_none()) {
+            let _ = app.emit(
+                "test-log",
+                "Verifying VRAM: zero, all-one, alternating and address patterns (32 MiB window)."
+                    .to_owned(),
+            );
+            let result = ctx
+                .vram_pattern_test(&stop, deadline, || {
+                    let sample = gpu.sample(0.0);
+                    if sample.gpu_temp <= 0.0 {
+                        return Err("GPU temperature sensor lost".into());
+                    }
+                    peak = peak.max(sample.gpu_temp);
+                    if sample.gpu_temp >= limit {
+                        overheated = true;
+                        return Err("GPU temperature limit reached".into());
+                    }
+                    Ok(())
+                })
+                .await;
+            match result {
+                Ok(n) => {
+                    vram_errors = Some(vram_errors.unwrap_or(0u32).saturating_add(n));
+                }
+                Err(_) if overheated => break,
+                Err(_) if stop.load(Ordering::SeqCst) || Instant::now() >= deadline => break,
+                Err(e) => return Err(e),
+            }
+            if vram_errors.unwrap_or(0) > 0 {
+                break;
+            }
+            let _ = app.emit("test-log", "VRAM pass complete: 0 errors.".to_owned());
+        } else {
+            ctx.burn_once();
+            compute_dispatches += 1;
+        }
+        // Approximate duty cycle; thermal and telemetry checks remain bounded.
+        let idle_until = Instant::now()
+            + dispatch_start
+                .elapsed()
+                .mul_f64((100 - intensity) as f64 / intensity as f64);
+        while Instant::now() < idle_until
+            && Instant::now() < deadline
+            && !stop.load(Ordering::SeqCst)
+        {
+            tokio::time::sleep(
+                idle_until
+                    .saturating_duration_since(Instant::now())
+                    .min(Duration::from_millis(100)),
+            )
+            .await;
+        }
+        tokio::task::yield_now().await;
+    }
+    let stopped = stop.load(Ordering::SeqCst);
+    if temps.is_empty() {
+        return Err("No telemetry collected".into());
+    }
+    let avg = temps.iter().sum::<f64>() / temps.len() as f64;
+    let (mut score, mut verdict, mut summary) = health_assessment(
+        vram_errors.unwrap_or(0),
+        overheated,
+        stopped,
+        avg,
+        peak,
+        false,
+    );
+    if overheated {
+        summary = format!("GPU reached {peak:.0}°C. Configured limit: {limit:.0}°C. Test aborted.");
+    }
+    if !stopped
+        && !overheated
+        && vram_errors.unwrap_or(0) == 0
+        && (workload != "full" || vram_errors.is_none() || compute_dispatches == 0)
+    {
+        score = 0;
+        verdict = "COMPLETED — LIMITED SCOPE".into();
+        summary = format!("{workload} workload completed. A full compute and VRAM run is required for certification.");
+    }
+    if gpu.info().is_fake {
+        score = 0;
+        verdict = "IDENTITY CHECK FAILED".into();
+        summary = gpu.info().fake_reason;
+    }
+    let _ = app.emit("test-log", format!("{verdict}. Peak {peak:.1}°C."));
+    Ok(Report {
+        health_score: score,
+        verdict,
+        summary,
+        verify_url: String::new(),
+        cert_id: format!("CG-{:016X}", rand::random::<u64>()),
+        avg_temp: Some(avg),
+        max_hotspot: Some(peak),
+        vram_errors,
+        cpu_errors: None,
+        perf_vs_avg: format!(
+            "{:.0} MHz average graphics clock",
+            clock_sum / temps.len() as f64
+        ),
+    })
+}
 fn health_assessment(
     vram_errors: u32,
     overheated: bool,
@@ -126,7 +442,11 @@ fn health_assessment(
         score = score.saturating_sub(5);
         notes.push(format!("avg {:.0}°C under sustained load", avg_temp));
     }
-    let verdict = if score >= 90 { "CERTIFIED" } else { "NEEDS ATTENTION" };
+    let verdict = if score >= 90 {
+        "CERTIFIED"
+    } else {
+        "NEEDS ATTENTION"
+    };
     let summary = if notes.is_empty() {
         "Thermals, VRAM and clocks all within healthy ranges.".to_string()
     } else {
@@ -135,192 +455,19 @@ fn health_assessment(
     (score, format!("{}{}", verdict, suffix), summary)
 }
 
-async fn run_certification(app: tauri::AppHandle, stop: Arc<AtomicBool>, duration_secs: u64) {
-    // Reset the `running` flag even if this task panics (e.g. a wgpu
-    // validation error) \u{2014} otherwise the UI would refuse to start another
-    // run with "a certification is already running" forever.
-    struct RunGuard {
-        running: Arc<AtomicBool>,
-    }
-    impl Drop for RunGuard {
-        fn drop(&mut self) {
-            self.running.store(false, Ordering::SeqCst);
-        }
-    }
-    let _guard = RunGuard {
-        running: app.state::<TestState>().running.clone(),
-    };
-
-    let log = |msg: String| {
-        let _ = app.emit("test-log", msg);
-    };
-    let mut gpu = Gpu::detect();
-    let simulated = !gpu.is_real();
-    let info = gpu.info();
-    let mode = if simulated { "SIMULATED (no NVIDIA GPU/driver)" } else { "NVML" };
-
-    log(format!("CertiGPU v{} \u{2014} starting certification ({})", env!("CARGO_PKG_VERSION"), mode));
-    log(format!("GPU: {} | VRAM: {:.1}GB {} | Driver: {}", info.name, info.vram_gb, info.vram_type, info.driver_version));
-    if info.is_fake {
-        log(format!("WARNING: {}", info.fake_reason));
-    } else {
-        log(format!("Identity check: {}", info.fake_reason));
-    }
-
-    // Acquire a GPU compute context for the load + VRAM test. If that fails
-    // on a real NVIDIA box we still continue in monitoring mode rather than
-    // dying \u{2014} but without NVML there is nothing real to monitor.
-    let gpu_ctx = if simulated {
-        None
-    } else {
-        match stress::GpuContext::new().await {
-            Ok(ctx) => Some(ctx),
-            Err(e) => {
-                log(format!("Compute context unavailable ({}); running telemetry-only.", e));
-                None
-            }
-        }
-    };
-    let load_capable = gpu_ctx.is_some();
-
-    // --- Phase 2: VRAM integrity -------------------------------------------
-    log("Phase 2/5: VRAM integrity \u{2014} writing pattern across 512MB...".to_string());
-    let vram_errors: u32 = if let Some(ctx) = &gpu_ctx {
-        match ctx.vram_pattern_test().await {
-            Ok(0) => {
-                log("VRAM pattern test: 0 errors".to_string());
-                0
-            }
-            Ok(n) => {
-                log(format!("VRAM pattern test: {} ERRORS", n));
-                n
-            }
-            Err(e) => {
-                log(format!("VRAM test skipped: {}", e));
-                0
-            }
-        }
-    } else if simulated {
-        log("VRAM pattern test: 0 errors (simulated)".to_string());
-        0
-    } else {
-        log("VRAM test skipped: no compute context".to_string());
-        0
-    };
-
-    // --- Phases 3-5: sustained load + telemetry ----------------------------
-    // The burn loop runs on a blocking thread; this task samples NVML at
-    // 500ms and drives progress + phase announcements.
-    let burn_stop = stop.clone();
-    let burn_handle = gpu_ctx.map(|ctx| {
-        tokio::task::spawn_blocking(move || {
-            ctx.burn(&burn_stop);
-        })
-    });
-    if load_capable {
-        log("Phase 3/5: Thermal stability \u{2014} sustained compute load...".to_string());
-    } else {
-        log("Phase 3/5: Thermal stability \u{2014} monitoring (no synthetic load available)...".to_string());
-    }
-
-    let start = Instant::now();
-    let mut temps: Vec<f64> = Vec::new();
-    let mut max_temp: f64 = 0.0;
-    let mut max_clock: f64 = 0.0;
-    let mut clock_sum = 0.0;
-    let mut clock_n = 0u32;
-    let mut overheated = false;
-    let mut stopped = false;
-    let mut announced_perf = false;
-    let mut announced_fan = false;
-    let mut ticker = tokio::time::interval(Duration::from_millis(SAMPLE_MS));
-
-    loop {
-        ticker.tick().await;
-        if stop.load(Ordering::SeqCst) {
-            stopped = true;
-            log("Stopped by user.".to_string());
-            break;
-        }
-        let elapsed = start.elapsed().as_secs_f64();
-        if elapsed >= duration_secs as f64 {
-            break;
-        }
-        let progress = (elapsed / duration_secs as f64 * 100.0).min(100.0);
-
-        if progress > 70.0 && !announced_perf {
-            announced_perf = true;
-            log("Phase 4/5: Performance baseline \u{2014} measuring clocks...".to_string());
-        }
-        if progress > 90.0 && !announced_fan {
-            announced_fan = true;
-            log("Phase 5/5: Fan & power summary...".to_string());
-        }
-
-        let t: Telemetry = gpu.sample(progress);
-        if t.gpu_temp >= OVERHEAT_C {
-            overheated = true;
-            log(format!(
-                "CRITICAL: GPU at {:.0}°C (limit {:.0}°C) \u{2014} aborting to protect hardware.",
-                t.gpu_temp, OVERHEAT_C
-            ));
-            break;
-        }
-        max_temp = max_temp.max(t.gpu_temp);
-        max_clock = max_clock.max(t.clock_mhz);
-        clock_sum += t.clock_mhz;
-        clock_n += 1;
-        temps.push(t.gpu_temp);
-        let _ = app.emit("telemetry", &t);
-    }
-
-    // Stop the burner and wait for it.
-    stop.store(true, Ordering::SeqCst);
-    if let Some(h) = burn_handle {
-        let _ = h.await;
-    }
-
-    let avg_temp = if temps.is_empty() {
-        0.0
-    } else {
-        temps.iter().sum::<f64>() / temps.len() as f64
-    };
-    let avg_clock = if clock_n == 0 { 0.0 } else { clock_sum / clock_n as f64 };
-    let (health_score, verdict, summary) =
-        health_assessment(vram_errors, overheated, stopped, avg_temp, max_temp, simulated);
-
-    let cert_id = format!("CG-{:08X}", rand::random::<u32>());
-    let report = Report {
-        health_score,
-        verdict,
-        summary,
-        verify_url: format!("https://certigpu.app/verify/{}", cert_id),
-        cert_id,
-        avg_temp: (avg_temp * 10.0).round() / 10.0,
-        max_hotspot: (max_temp * 10.0).round() / 10.0,
-        vram_errors,
-        perf_vs_avg: if avg_clock > 0.0 {
-            format!("{:.0} MHz avg / {:.0} MHz peak", avg_clock, max_clock)
-        } else {
-            "n/a".to_string()
-        },
-    };
-    log(format!("Done. Verdict: {} ({}%)", report.verdict, report.health_score));
-    let _ = app.emit("test-done", &report);
-}
-
 fn main() {
     tauri::Builder::default()
         .manage(TestState::default())
         .invoke_handler(tauri::generate_handler![
             get_gpu_info,
+            get_cpu_info,
             start_certification,
+            start_cpu_test,
             stop_certification
         ])
         .run(tauri::generate_context!())
         .expect("failed to run CertiGPU");
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
