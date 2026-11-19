@@ -1,4 +1,4 @@
-//! CertiGPU backend: Tauri commands + the 15-minute certification orchestrator.
+//! CertiGPU backend: Tauri commands + the shorter GPU certification orchestrator.
 //!
 //! Frontend contract (see `src/App.jsx`):
 //! - command `get_gpu_info` -> [`gpu::GpuInfo`]
@@ -21,8 +21,8 @@ use tauri::{Emitter, Manager, State};
 
 /// Abort the run if the GPU edge temperature reaches this.
 const OVERHEAT_C: f64 = 92.0;
-/// Default certification length (seconds). The UI labels it "15-min".
-const DEFAULT_DURATION_SECS: u64 = 900;
+/// Default certification length (seconds). The UI labels it as a sub-15-minute run.
+const DEFAULT_DURATION_SECS: u64 = 300;
 /// Telemetry cadence promised by the README.
 const SAMPLE_MS: u64 = 500;
 

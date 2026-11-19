@@ -133,7 +133,7 @@ export default function App() {
                   <div className="card"><div style={{ color: 'var(--muted)', fontSize: 12 }}>UUID</div><div style={{ fontSize: 11, fontFamily: 'monospace', marginTop: 8 }}>{gpuInfo.uuid}</div></div>
                   <div className="card"><div style={{ color: 'var(--muted)', fontSize: 12 }}>FAKE CHECK</div><div style={{ marginTop: 8, fontSize: 13 }}>{gpuInfo.fake_reason}</div></div>
                 </div>
-                <button className="btn" onClick={startTest} style={{ width: 280 }}>Start 15-min Certification</button>
+                <button className="btn" onClick={startTest} style={{ width: 280 }}>Start 5-min Certification</button>
                 <div style={{ fontSize: 12, color: 'var(--muted)' }}>Free scan. Pay $3.99 only to mint QR certificate.</div>
               </>
             )}

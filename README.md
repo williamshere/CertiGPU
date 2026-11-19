@@ -1,7 +1,7 @@
 # CertiGPU — "The Carfax for GPUs"
 
 Desktop app (Tauri v2 + React) that detects your NVIDIA GPU, runs a
-**15-minute certification** (VRAM integrity test, thermal stability under
+**5-minute certification** (VRAM integrity test, thermal stability under
 real compute load, performance baseline, fan & power), and produces a
 health-score report with a verification QR code.
 
@@ -50,15 +50,15 @@ Release build:
 npm run tauri build
 ```
 
-## Safety — read this before the 15-minute test
+## Safety — read this before the test
 
-- The certification pins your GPU at ~100% compute load for 15 minutes.
+- The certification pins your GPU at ~100% compute load for 5 minutes.
   That is the point, but respect it: **do not run it with blocked vents**,
   and keep an eye on the live temperature chart.
 - The app **auto-aborts at 92°C** and you can hit **Stop Test** anytime.
-- On laptops or small-form-factor PCs, consider a shorter run — the
+- On laptops or small-form-factor PCs, you can still shorten it further — the
   duration is a parameter (`start_certification` accepts seconds; the UI
-  uses the 900s default).
+  uses the 300s default).
 - No overclocking or voltage changes are made. Ever. This app only
   observes and loads; it never writes GPU settings.
 
