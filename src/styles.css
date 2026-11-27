@@ -1473,3 +1473,30 @@ footer .mint {
     flex-wrap: wrap;
   }
 }
+.history-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.history-stats div {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+}
+.history-stats small {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+.history-stats strong {
+  display: block;
+  font-size: 22px;
+  font-weight: 600;
+  margin-top: 8px;
+}
+@media (max-width: 700px) {
+  .history-stats {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}

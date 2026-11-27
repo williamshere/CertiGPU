@@ -9,6 +9,7 @@ import {
   download,
   optimizationScript,
   WORKLOADS,
+  summarizeReports,
 } from "./hardware.js";
 
 const native = isTauri();
@@ -168,6 +169,7 @@ function App() {
   const timer = useRef(null);
   const listenersReady = useRef(false);
   const [ready, setReady] = useState(!native);
+  const stats = summarizeReports(reports);
   const notify = (text) => setToast(text);
   useEffect(() => {
     settingsRef.current = settings;
@@ -1328,6 +1330,29 @@ function App() {
                     <h2>Test history</h2>
                     <span className="label">{reports.length} REPORTS</span>
                   </div>
+                  {reports.length > 0 && (
+                    <div className="history-stats">
+                      {[
+                        ["TESTS RUN", stats.total],
+                        [
+                          "CLEAN RATE",
+                          stats.cleanRate == null ? "—" : `${stats.cleanRate}%`,
+                        ],
+                        ["TIME UNDER LOAD", `${stats.testedMinutes} min`],
+                        [
+                          "HOTTEST AVG",
+                          stats.hottestAvg == null
+                            ? "—"
+                            : temperature(stats.hottestAvg),
+                        ],
+                      ].map(([k, v]) => (
+                        <div key={k}>
+                          <small>{k}</small>
+                          <strong>{v}</strong>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   {reports.length ? (
                     reports.map((r) => (
                       <button

@@ -6,6 +6,7 @@ import {
   DEFAULT_SETTINGS,
   optimizationScript,
   readSaved,
+  summarizeReports,
 } from "../src/hardware.js";
 
 test("settings bound unsafe input and normalize persisted types", () => {
@@ -75,4 +76,14 @@ test("Windows scripts stop on missing plans and include rollback for both profil
     assert.ok(script.includes("if ($LASTEXITCODE -ne 0)"));
     assert.ok(script.includes("powercfg /setactive (Get-Content $state)"));
   }
+});
+
+test("summarizeReports ignores demo/stopped runs for clean rate", () => {
+  const s = summarizeReports([
+    { verdict: "PASSED", elapsed_secs: 120, avg_temp: 70 },
+    { verdict: "FAILED", cpu_errors: 2, elapsed_secs: 60, avg_temp: 80 },
+    { verdict: "COMPLETED · DEMO", elapsed_secs: 60 },
+  ]);
+  assert.deepEqual(s, { total: 3, cleanRate: 50, testedMinutes: 4, hottestAvg: 80 });
+  assert.equal(summarizeReports([]).cleanRate, null);
 });

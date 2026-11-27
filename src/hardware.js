@@ -91,3 +91,20 @@ export const WORKLOADS = {
     },
   ],
 };
+export function summarizeReports(reports) {
+  const real = reports.filter((r) => !/DEMO|STOPPED/i.test(r.verdict || ""));
+  const clean = real.filter(
+    (r) => !(r.cpu_errors > 0) && !(r.vram_errors > 0) && !/FAIL/i.test(r.verdict || ""),
+  );
+  const seconds = reports.reduce(
+    (sum, r) => sum + (Number(r.elapsed_secs) || 0),
+    0,
+  );
+  const temps = real.map((r) => r.avg_temp).filter(Number.isFinite);
+  return {
+    total: reports.length,
+    cleanRate: real.length ? Math.round((clean.length / real.length) * 100) : null,
+    testedMinutes: Math.round(seconds / 60),
+    hottestAvg: temps.length ? Math.max(...temps) : null,
+  };
+}
