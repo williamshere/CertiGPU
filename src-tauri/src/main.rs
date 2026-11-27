@@ -273,7 +273,7 @@ async fn run_gpu(
     while Instant::now() < deadline && !stop.load(Ordering::SeqCst) {
         if Instant::now() >= next_sample {
             let sample =
-                gpu.sample((start.elapsed().as_secs_f64() / seconds as f64 * 100.0).min(100.0));
+                gpu.sample((start.elapsed().as_secs_f64() / seconds as f64 * 100.0).min(100.0))?;
             if sample.gpu_temp <= 0.0 {
                 return Err("GPU temperature sensor unavailable; test aborted.".into());
             }
@@ -300,7 +300,7 @@ async fn run_gpu(
             );
             let result = ctx
                 .vram_pattern_test(&stop, deadline, || {
-                    let sample = gpu.sample(0.0);
+                    let sample = gpu.sample(0.0)?;
                     if sample.gpu_temp <= 0.0 {
                         return Err("GPU temperature sensor lost".into());
                     }

@@ -99,7 +99,10 @@ fn fake_check(name: &str, vram_gb: f64) -> (bool, String, u32, String) {
             }
             return (
                 false,
-                format!("Device ID and {:.1}GB VRAM match the expected {} profile", vram_gb, model),
+                format!(
+                    "Device ID and {:.1}GB VRAM match the expected {} profile",
+                    vram_gb, model
+                ),
                 cores,
                 mem_type.to_string(),
             );
@@ -137,20 +140,13 @@ impl Gpu {
         matches!(self, Gpu::Real(_))
     }
 
-    fn real_device(
-        &self,
-    ) -> Option<nvml_wrapper::Device<'_>> {
-        match self {
-            Gpu::Real(nvml) => nvml.device_by_index(0).ok(),
-            Gpu::Simulated { .. } => None,
-        }
-    }
-
     pub fn info(&self) -> GpuInfo {
         match self {
             Gpu::Real(nvml) => match nvml.device_by_index(0) {
                 Ok(dev) => {
-                    let name = dev.name().unwrap_or_else(|_| "Unknown NVIDIA GPU".to_string());
+                    let name = dev
+                        .name()
+                        .unwrap_or_else(|_| "Unknown NVIDIA GPU".to_string());
                     let mem = dev
                         .memory_info()
                         .map(|m| m.total as f64 / 1_073_741_824.0)
@@ -166,7 +162,9 @@ impl Gpu {
                                 )
                             })
                             .unwrap_or_else(|_| "unknown".to_string()),
-                        bios_version: dev.vbios_version().unwrap_or_else(|_| "unknown".to_string()),
+                        bios_version: dev
+                            .vbios_version()
+                            .unwrap_or_else(|_| "unknown".to_string()),
                         driver_version: nvml
                             .sys_driver_version()
                             .unwrap_or_else(|_| "unknown".to_string()),
@@ -208,43 +206,47 @@ impl Gpu {
 
     /// Sample one telemetry point. `progress` is 0–100 and is echoed back so
     /// the frontend can drive its progress bar from the same payload.
-    pub fn sample(&mut self, progress: f64) -> Telemetry {
-        if let Some(dev) = self.real_device() {
-            let mem = dev.memory_info();
-            Telemetry {
-                gpu_temp: dev.temperature(TemperatureSensor::Gpu).unwrap_or(0) as f64,
-                // NVML exposes only the edge temperature; hotspot/memory track
-                // it closely on load, so we report the edge temp with a note.
-                hotspot_temp: dev.temperature(TemperatureSensor::Gpu).unwrap_or(0) as f64,
-                mem_temp: dev.temperature(TemperatureSensor::Gpu).unwrap_or(0) as f64,
-                power_draw: dev.power_usage().unwrap_or(0) as f64 / 1000.0,
-                power_limit: dev.enforced_power_limit().unwrap_or(0) as f64 / 1000.0,
-                clock_mhz: dev.clock(Clock::Graphics, ClockId::Current).unwrap_or(0) as f64,
-                fan_percent: dev.fan_speed(0).unwrap_or(0) as f64,
-                vram_used_mb: mem.map(|m| m.used as f64 / 1_048_576.0).unwrap_or(0.0),
-                progress,
+    pub fn sample(&mut self, progress: f64) -> Result<Telemetry, String> {
+        match self {
+            Gpu::Real(nvml) => {
+                let dev = nvml
+                    .device_by_index(0)
+                    .map_err(|error| format!("GPU device became unavailable: {error}"))?;
+                let gpu_temp = dev
+                    .temperature(TemperatureSensor::Gpu)
+                    .map_err(|error| format!("GPU temperature sensor unavailable: {error}"))?
+                    as f64;
+                let mem = dev.memory_info().ok();
+                Ok(Telemetry {
+                    gpu_temp,
+                    // NVML exposes only the edge temperature; hotspot/memory track
+                    // it closely on load, so we report the edge temp with a note.
+                    hotspot_temp: gpu_temp,
+                    mem_temp: gpu_temp,
+                    power_draw: dev.power_usage().unwrap_or(0) as f64 / 1000.0,
+                    power_limit: dev.enforced_power_limit().unwrap_or(0) as f64 / 1000.0,
+                    clock_mhz: dev.clock(Clock::Graphics, ClockId::Current).unwrap_or(0) as f64,
+                    fan_percent: dev.fan_speed(0).unwrap_or(0) as f64,
+                    vram_used_mb: mem.map(|m| m.used as f64 / 1_048_576.0).unwrap_or(0.0),
+                    progress,
+                })
             }
-        } else {
-            // Synthetic load curve: idle ~42C, ramps toward ~74C under load.
-            let tick = match self {
-                Gpu::Simulated { tick } => {
-                    *tick += 1;
-                    *tick as f64
-                }
-                Gpu::Real(_) => 0.0,
-            };
-            let load_factor = (progress / 100.0).clamp(0.0, 1.0);
-            let temp = 42.0 + 32.0 * load_factor * (1.0 - (-tick / 40.0).exp());
-            Telemetry {
-                gpu_temp: temp,
-                hotspot_temp: temp + 8.0,
-                mem_temp: temp + 4.0,
-                power_draw: 35.0 + 165.0 * load_factor,
-                power_limit: 200.0,
-                clock_mhz: 1500.0 + 1050.0 * load_factor,
-                fan_percent: 30.0 + 45.0 * load_factor,
-                vram_used_mb: 450.0 + 3200.0 * load_factor,
-                progress,
+            Gpu::Simulated { tick } => {
+                // Synthetic load curve: idle ~42C, ramps toward ~74C under load.
+                *tick += 1;
+                let load_factor = (progress / 100.0).clamp(0.0, 1.0);
+                let temp = 42.0 + 32.0 * load_factor * (1.0 - (-(*tick as f64) / 40.0).exp());
+                Ok(Telemetry {
+                    gpu_temp: temp,
+                    hotspot_temp: temp + 8.0,
+                    mem_temp: temp + 4.0,
+                    power_draw: 35.0 + 165.0 * load_factor,
+                    power_limit: 200.0,
+                    clock_mhz: 1500.0 + 1050.0 * load_factor,
+                    fan_percent: 30.0 + 45.0 * load_factor,
+                    vram_used_mb: 450.0 + 3200.0 * load_factor,
+                    progress,
+                })
             }
         }
     }
