@@ -47,6 +47,27 @@ pub struct GpuContext {
     burn: Option<(wgpu::ComputePipeline, wgpu::BindGroup, wgpu::Buffer)>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum VramTestError {
+    Interrupted,
+    SafetyCheck(String),
+    Readback(String),
+}
+
+fn check_vram_safety<F>(
+    stop: &AtomicBool,
+    deadline: std::time::Instant,
+    check_temperature: &mut F,
+) -> Result<(), VramTestError>
+where
+    F: FnMut() -> Result<(), String>,
+{
+    if stop.load(Ordering::SeqCst) || std::time::Instant::now() >= deadline {
+        return Err(VramTestError::Interrupted);
+    }
+    check_temperature().map_err(VramTestError::SafetyCheck)
+}
+
 impl GpuContext {
     /// Match the NVIDIA device being monitored; refuse unsupported adapters.
     pub async fn new(device_name: &str) -> Result<Self, String> {
@@ -142,17 +163,17 @@ impl GpuContext {
         stop: &Arc<AtomicBool>,
         deadline: std::time::Instant,
         mut check_temperature: F,
-    ) -> Result<u32, String>
+    ) -> Result<u32, VramTestError>
     where
         F: FnMut() -> Result<(), String>,
     {
         let mut total_errors = 0u32;
         for pattern in [0u32, u32::MAX, 0xaaaaaaaa, 0x55555555] {
-            if stop.load(Ordering::SeqCst) || std::time::Instant::now() >= deadline {
-                return Err("VRAM test interrupted".into());
-            }
-            check_temperature()?;
-            total_errors += self.vram_chunk_test(32 * 1024 * 1024, pattern).await?;
+            check_vram_safety(stop, deadline, &mut check_temperature)?;
+            total_errors += self
+                .vram_chunk_test(32 * 1024 * 1024, pattern)
+                .await
+                .map_err(VramTestError::Readback)?;
             if total_errors > 64 {
                 break;
             }
@@ -289,5 +310,37 @@ impl GpuContext {
             // of queueing unbounded work.
             let _ = self.device.poll(wgpu::Maintain::Wait);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn safety_failure_is_not_reclassified_if_stopped_during_callback() {
+        let stop = AtomicBool::new(false);
+        let result =
+            check_vram_safety(&stop, Instant::now() + Duration::from_secs(10), &mut || {
+                stop.store(true, Ordering::SeqCst);
+                Err("sensor lost".into())
+            });
+        assert_eq!(
+            result,
+            Err(VramTestError::SafetyCheck("sensor lost".into()))
+        );
+    }
+
+    #[test]
+    fn interrupted_vram_check_does_not_sample() {
+        let stop = AtomicBool::new(false);
+        let mut called = false;
+        let result = check_vram_safety(&stop, Instant::now(), &mut || {
+            called = true;
+            Ok(())
+        });
+        assert_eq!(result, Err(VramTestError::Interrupted));
+        assert!(!called);
     }
 }
