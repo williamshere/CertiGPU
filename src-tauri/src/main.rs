@@ -312,13 +312,15 @@ async fn run_gpu(
                     Ok(())
                 })
                 .await;
-            match result {
-                Ok(n) => {
+            match handle_vram_result(
+                result,
+                overheated,
+                stop.load(Ordering::SeqCst) || Instant::now() >= deadline,
+            )? {
+                Some(n) => {
                     vram_errors = Some(vram_errors.unwrap_or(0u32).saturating_add(n));
                 }
-                Err(_) if overheated => break,
-                Err(_) if stop.load(Ordering::SeqCst) || Instant::now() >= deadline => break,
-                Err(e) => return Err(e),
+                None => break,
             }
             if vram_errors.unwrap_or(0) > 0 {
                 break;
@@ -468,9 +470,53 @@ fn main() {
         .run(tauri::generate_context!())
         .expect("failed to run CertiGPU");
 }
+
+fn handle_vram_result(
+    result: Result<u32, stress::VramTestError>,
+    overheated: bool,
+    interrupted: bool,
+) -> Result<Option<u32>, String> {
+    match result {
+        Ok(n) => Ok(Some(n)),
+        Err(_) if overheated => Ok(None),
+        Err(stress::VramTestError::SafetyCheck(e)) => Err(e),
+        Err(stress::VramTestError::Interrupted) => Ok(None),
+        Err(stress::VramTestError::Readback(_)) if interrupted => Ok(None),
+        Err(stress::VramTestError::Readback(e)) => Err(e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vram_safety_error_survives_interruption() {
+        let error = stress::VramTestError::SafetyCheck("GPU temperature sensor lost".into());
+        assert_eq!(
+            handle_vram_result(Err(error), false, true),
+            Err("GPU temperature sensor lost".into())
+        );
+    }
+
+    #[test]
+    fn vram_result_preserves_interruption_and_overheat_behavior() {
+        use stress::VramTestError::*;
+        assert_eq!(handle_vram_result(Ok(3), false, true), Ok(Some(3)));
+        assert_eq!(handle_vram_result(Err(Interrupted), false, true), Ok(None));
+        assert_eq!(
+            handle_vram_result(Err(SafetyCheck("limit".into())), true, true),
+            Ok(None)
+        );
+        assert_eq!(
+            handle_vram_result(Err(Readback("readback".into())), false, true),
+            Ok(None)
+        );
+        assert_eq!(
+            handle_vram_result(Err(Readback("readback".into())), false, false),
+            Err("readback".into())
+        );
+    }
 
     #[test]
     fn test_health_assessment_stopped() {
